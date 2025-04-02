@@ -1,21 +1,21 @@
 # src/features.py
 import numpy as np
 
-# 提取对齐后 firing rate 特征
+# extracting featuer
 def extract_firing_rate(T, label_type='slant', bin_size=0.001, window=(0, 0.2)):
-    X = []  # 特征矩阵（trial × unit）
-    y = []  # 标签（slant 或 tilt）
+    X = []  # feature matrix（trial × unit）
+    y = []  # tag（slant or tilt）
 
     for trial in T:
-        # 获取 stimulus onset 时间
+        # get stimulus onset time
         eid = trial.EID
         etimes = trial.EventT
         stim_idx = np.where(eid == 118)[0]
         if len(stim_idx) == 0:
-            continue  # 没有刺激的跳过
+            continue  # skip no respond
         stim_time = etimes[stim_idx[0]]
 
-        features = []  # 当前 trial 的 firing rates
+        features = []  # current trial firing rates
 
         for tt in range(1, 9):
             tt_field = f'UnitT_TT{tt}'
@@ -24,7 +24,7 @@ def extract_firing_rate(T, label_type='slant', bin_size=0.001, window=(0, 0.2)):
             tt_units = getattr(trial, tt_field)
 
             if not isinstance(tt_units, (list, np.ndarray)):
-                tt_units = [tt_units]  # 单个 unit
+                tt_units = [tt_units]  # single unit
 
             for unit_spikes in tt_units:
                 if unit_spikes is None:
