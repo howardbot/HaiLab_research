@@ -1,0 +1,4 @@
+There are 8 data structures which have data from 4 sessions, 4 for area V3A and 4 for area CIP. In each data structure, each row represents a trial. 
+EventT has the time stamps for the various events that happened during a trial with (relative to the start time), and EID has event codes which help you decode those events. EID 118 indicates the onset of the visual stimulus relative to the start of the trial.
+The stimulus information (fixation distance, slant and tilt values) are also given for each trial.
+In the UnitT columns for each tetrode, each column has spike times (relative to the start time) for each isolated unit on the tetrode. 
