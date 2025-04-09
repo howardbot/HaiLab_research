@@ -1,50 +1,67 @@
-# src/features.py
+# src/Features.py
 import numpy as np
 
-# 提取对齐后 firing rate 特征
-def extract_firing_rate(T, label_type='slant', bin_size=0.001, window=(0, 0.2)):
-    X = []  # 特征矩阵（trial × unit）
-    y = []  # 标签（slant 或 tilt）
+def extract_firing_rate(T, label_type='slant', window=(0, 0.2)):
+    X = []
+    y = []
 
-    for trial in T:
-        # 获取 stimulus onset 时间
-        eid = trial.EID
-        etimes = trial.EventT
-        stim_idx = np.where(eid == 118)[0]
-        if len(stim_idx) == 0:
-            continue  # 没有刺激的跳过
-        stim_time = etimes[stim_idx[0]]
+    # 从第一个 trial 建 neuron map
+    trial0 = T[0]
+    neuron_map = []
+    for tt in range(1, 9):
+        tt_field = f'UnitT_TT{tt}'
+        if hasattr(trial0, tt_field):
+            tt_units = getattr(trial0, tt_field)
+            if not isinstance(tt_units, (list, tuple, np.ndarray)):
+                tt_units = [tt_units]
+            for unit_idx in range(len(tt_units)):
+                neuron_map.append((tt, unit_idx))
 
-        features = []  # 当前 trial 的 firing rates
+    for i, trial in enumerate(T):
+        stim_onset = None
+        if hasattr(trial, 'EID') and hasattr(trial, 'EventT'):
+            eid_list = np.atleast_1d(trial.EID)
+            stim_indices = np.where(eid_list == 118)[0]
+            if len(stim_indices) > 0:
+                stim_onset = trial.EventT[stim_indices[0]]
 
-        for tt in range(1, 9):
+        if stim_onset is None:
+            continue  # 跳过无刺激的 trial
+
+        features = []
+        for tt, unit_idx in neuron_map:
             tt_field = f'UnitT_TT{tt}'
             if not hasattr(trial, tt_field):
+                features.append(0)
                 continue
-            tt_units = getattr(trial, tt_field)
 
-            if not isinstance(tt_units, (list, np.ndarray)):
-                tt_units = [tt_units]  # 单个 unit
+            units = getattr(trial, tt_field)
+            if not isinstance(units, (list, tuple, np.ndarray)):
+                units = [units]
 
-            for unit_spikes in tt_units:
-                if unit_spikes is None:
-                    features.append(0)
-                    continue
-                unit_spikes = np.atleast_1d(unit_spikes)
-                if len (unit_spikes) == 0:
-                    features.append(0)
-                    continue
-                aligned = np.array(unit_spikes) - stim_time
-                spikes_in_window = ((aligned >= window[0]) & (aligned <= window[1])).sum()
-                rate = spikes_in_window / (window[1] - window[0])
-                features.append(rate)
+            if unit_idx >= len(units):
+                features.append(0)
+                continue
 
-        if label_type == 'slant':
-            label = trial.slant
-        elif label_type == 'tilt':
-            label = trial.tilt
-        else:
-            raise ValueError("Unsupported label type")
+            unit_spikes = units[unit_idx]
+            if unit_spikes is None:
+                features.append(0)
+                continue
+
+            unit_spikes = np.atleast_1d(unit_spikes)
+            aligned_spikes = unit_spikes - stim_onset
+            in_window = (aligned_spikes >= window[0]) & (aligned_spikes <= window[1])
+            firing_rate = np.sum(in_window) / (window[1] - window[0])
+            features.append(firing_rate)
+
+        # 报警并跳过不一致的 trial
+        if len(X) > 0 and len(features) != len(X[0]):
+            print(f"[⚠️ Warning] Trial {i} has feature length {len(features)}, expected {len(X[0])}. Trial skipped.")
+            continue
+
+        label = getattr(trial, label_type) if hasattr(trial, label_type) else None
+        if label is None:
+            continue
 
         X.append(features)
         y.append(label)
