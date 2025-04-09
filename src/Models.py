@@ -27,7 +27,7 @@ def train_classifier(X,Y):
     cm = confusion_matrix(Y,y_pred,labels=np.unique(Y))
     disp = ConfusionMatrixDisplay(confusion_matrix=cm,display_labels=np.unique(Y))
     disp.plot(cmap="Blues")
-    plt.title("Confusion Matrix - Slant decoding")
+    plt.title("Confusion Matrix - Area Classification (CIP vs V3A)")
     plt.tight_layout()
     plt.show()
 

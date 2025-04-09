@@ -5,7 +5,7 @@ def extract_firing_rate(T, label_type='slant', window=(0, 0.2)):
     X = []
     y = []
 
-    # 从第一个 trial 建 neuron map
+    # build map from the first trial
     trial0 = T[0]
     neuron_map = []
     for tt in range(1, 9):
@@ -26,7 +26,7 @@ def extract_firing_rate(T, label_type='slant', window=(0, 0.2)):
                 stim_onset = trial.EventT[stim_indices[0]]
 
         if stim_onset is None:
-            continue  # 跳过无刺激的 trial
+            continue  # skip no stimuli trial
 
         features = []
         for tt, unit_idx in neuron_map:
@@ -54,7 +54,7 @@ def extract_firing_rate(T, label_type='slant', window=(0, 0.2)):
             firing_rate = np.sum(in_window) / (window[1] - window[0])
             features.append(firing_rate)
 
-        # 报警并跳过不一致的 trial
+        # make a warning and skip inconsistent trial
         if len(X) > 0 and len(features) != len(X[0]):
             print(f"[⚠️ Warning] Trial {i} has feature length {len(features)}, expected {len(X[0])}. Trial skipped.")
             continue
