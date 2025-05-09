@@ -59,6 +59,7 @@ for fname in mat_files:
     with open(os.path.join(output_dir,f"centraility_{fname}.txt"),'w') as f:
         f.write("Neuron\tDegree\tDegCenter\tBetweeness\tCloseness\n")
         for n in G.nodes():
+            # Keep 4 digits after the decimal point
             f.write(f"{n}\t{degree_dict[n]}\t{degree_centrality[n]:.4f}\t{betweenness[n]:.4f}\t{closeness[n]:.4f}\n")
 
     plt.figure(figsize=(8, 8))
