@@ -1,4 +1,4 @@
-# fr_recording.py
+# fr_recording.py（任务 1–4：补充 histogram debug 打印）
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -51,14 +51,18 @@ def build_neuron_map(trial):
                 neuron_map.append((tt, 0))
     return neuron_map
 
-def compute_population_rate(spike_matrix, bin_size=0.01, duration=1.0):
+def compute_population_rate(spike_trials, bin_size=0.01, duration=1.0):
     num_bins = int(duration / bin_size)
     rate = np.zeros(num_bins)
-    for spikes in spike_matrix:
-        hist, _ = np.histogram(spikes, bins=num_bins, range=(0, duration))
-        rate += hist
-    rate /= len(spike_matrix)  # avg across neurons
-    rate /= bin_size  # convert to Hz
+    count = 0
+    for neuron_trials in spike_trials:
+        for spikes in neuron_trials:
+            hist, _ = np.histogram(spikes, bins=num_bins, range=(0, duration))
+            rate += hist
+            count += 1
+    if count > 0:
+        rate = rate / count
+        rate /= bin_size
     return rate
 
 def plot_raster_and_rate(all_spikes, align_times, neuron_map, fname, label, window, output_dir):
@@ -80,19 +84,21 @@ def plot_raster_and_rate(all_spikes, align_times, neuron_map, fname, label, wind
     duration = window[1] - window[0]
     time_bins = np.arange(window[0], window[1], bin_size)
     pop_spikes = []
+    all_aligned_latencies = []
 
     for neuron_idx in range(num_neurons):
         color = colors[neuron_idx % len(colors)]
         center = ytick_positions[neuron_idx]
         all_spike_times = []
-        aligned_all = []
+        neuron_trial_spikes = []
         for trial_idx in range(num_trials):
             spikes = all_spikes[trial_idx][neuron_idx]
             aligned = np.array(spikes, dtype=float) - align_times[trial_idx]
             trial_spikes = aligned[(aligned >= window[0]) & (aligned <= window[1])]
             all_spike_times.extend(trial_spikes)
-            aligned_all.extend(trial_spikes)
-        pop_spikes.append(np.array(aligned_all))
+            neuron_trial_spikes.append(trial_spikes)
+            all_aligned_latencies.extend(trial_spikes)
+        pop_spikes.append(neuron_trial_spikes)
         if all_spike_times:
             ax_raster.vlines(all_spike_times, center - height / 2, center + height / 2, color=color, linewidth=0.6)
 
@@ -106,6 +112,15 @@ def plot_raster_and_rate(all_spikes, align_times, neuron_map, fname, label, wind
     ax_rate.fill_between(time_bins[:len(rate)], 0, rate, alpha=0.3)
     ax_rate.set_ylabel("Rate (Hz)")
     ax_rate.set_xlabel("Time (s) from {}".format(label.lower()))
+
+    for x in time_bins:
+        ax_rate.axvline(x, color='gray', alpha=0.2, linestyle='--', linewidth=0.3)
+
+    # Debug: latency histogram
+    if label.lower() == "pre stim":
+        debug_hist, debug_bins = np.histogram(all_aligned_latencies, bins=10, range=window)
+        print(f"[DEBUG] Pre-stim latency histogram (bin counts): {debug_hist}")
+        print(f"[DEBUG] Pre-stim histogram bin edges: {debug_bins}")
 
     fig.subplots_adjust(hspace=0.25)
     save_name = f"combined_raster_rate_{label.lower().replace(' ', '_')}_{os.path.splitext(fname)[0]}.png"
@@ -145,9 +160,9 @@ def main():
     files = [f for f in os.listdir(data_dir) if f.endswith(".mat")]
 
     for f in files:
-        analyze_file(f, window=(0, 0.5), align_to=120, label="Post Stim", output_dir=output_dir)  # Task 2
-        analyze_file(f, window=(-0.5, 0), align_to=118, label="Pre Stim", output_dir=output_dir)   # Task 3
-        analyze_file(f, window=(0, 0.5), align_to=118, label="During Stim", output_dir=output_dir) # Task 1
+        analyze_file(f, window=(0, 0.5), align_to=120, label="Post Stim", output_dir=output_dir)
+        analyze_file(f, window=(-0.5, 0), align_to=118, label="Pre Stim", output_dir=output_dir)
+        analyze_file(f, window=(0, 0.5), align_to=118, label="During Stim", output_dir=output_dir)
 
 if __name__ == "__main__":
     main()

@@ -1,4 +1,4 @@
-# firing_latency_connectivity.py firing rate log correlation & latency correlation）
+# firing_latency_connectivity.py firing rate log correlation & latency correlation
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -128,22 +128,41 @@ def analyze_file(fname):
     stim_offs = np.array(stim_offs)
 
     # --- Task 5 ---
-    for label, align, window, valids in [
-        ("Pre-Stim", stim_ons, (-0.5, 0), trial_valids["pre"]),
-        ("During-Stim", stim_ons, (0, 0.5), trial_valids["during"]),
-        ("Post-Stim", stim_offs, (0, 0.5), trial_valids["post"]),
-    ]:
-        rate_mat = compute_firing_rate_matrix(all_spikes, align, window, valids)
-        log_mat = np.log(rate_mat + EPS)
-        if log_mat.shape[0] > 1:
-            corr = np.corrcoef(np.nan_to_num(log_mat))
-            plot_matrix(corr, title=f"{label} Log Rate Correlation", fname=f"log_rate_{label.lower().replace('-', '_')}_{os.path.splitext(fname)[0]}.png")
+    rate_mat = compute_firing_rate_matrix(all_spikes, stim_ons, (0, 0.5), trial_valids["during"])
+    log_mat = np.log(rate_mat + EPS)
+    if log_mat.shape[0] > 1:
+        log_corr = np.corrcoef(np.nan_to_num(log_mat))
+        plot_matrix(log_corr, title="During-Stim Log Rate Correlation", fname=f"log_rate_during_stim_{os.path.splitext(fname)[0]}.png")
 
-    # --- Task 6: latency correlation (only During-stim makes sense) ---
+    # --- Task 6 ---
     lat_mat = compute_latency_matrix(all_spikes, stim_ons, window=(0, 0.5))
     if lat_mat.shape[0] > 1:
         lat_corr = np.corrcoef(np.nan_to_num(lat_mat))
         plot_matrix(lat_corr, title="Latency Correlation (During-Stim)", fname=f"latency_corr_{os.path.splitext(fname)[0]}.png")
+
+        # Latency diff vs log corr binned
+        mean_latency = np.nanmean(lat_mat, axis=1)
+        latency_diff = np.abs(mean_latency[:, None] - mean_latency[None, :])
+        i, j = np.triu_indices_from(latency_diff, k=1)
+        x = latency_diff[i, j]
+        y = log_corr[i, j]
+
+        bins = np.linspace(0, np.max(x), 30)
+        bin_centers = (bins[:-1] + bins[1:]) / 2
+        bin_means = []
+        for k in range(len(bins) - 1):
+            mask = (x >= bins[k]) & (x < bins[k+1])
+            bin_means.append(np.mean(y[mask]) if np.any(mask) else np.nan)
+
+        plt.figure(figsize=(8, 6))
+        plt.stem(bin_centers, bin_means, basefmt=" ")
+        plt.xlabel("Latency Difference (s)")
+        plt.ylabel("Mean Log Rate Corr")
+        plt.title("Binned: Latency Diff vs Log Corr")
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f"latdiff_vs_logcorr_{os.path.splitext(fname)[0]}.png"))
+        plt.close()
 
 def main():
     files = [f for f in os.listdir("./data") if f.endswith(".mat")]

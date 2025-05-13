@@ -1,72 +1,141 @@
-# neuron_connectivity.py
+# latency_corr_graph.py
+
+
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
 import networkx as nx
-
-
 from src.Loader import load_mat_session
-from src.Features import extract_firing_rate
 
-data_dir = "./data"
-output_dir = "./Connectivity"
+STIM_ON_ID = 118
+STIM_OFF_ID = 120
+EPS = 1e-3
+
+output_dir = "task56_graph"
 os.makedirs(output_dir, exist_ok=True)
 
-#define data files
-mat_files = [f for f in os.listdir(data_dir) if f.endswith(".mat")]
+def extract_spike_times(trial, neuron_map):
+    spikes = []
+    for tt, unit in neuron_map:
+        field = f"UnitT_TT{tt}"
+        if not hasattr(trial, field):
+            spikes.append([])
+            continue
+        units = getattr(trial, field)
+        if isinstance(units, (list, tuple, np.ndarray)) and hasattr(units, '__len__'):
+            if isinstance(units, np.ndarray) and units.dtype != object:
+                spikes.append(units)
+            elif unit < len(units):
+                spikes.append(np.atleast_1d(units[unit]))
+            else:
+                spikes.append([])
+        else:
+            spikes.append(np.atleast_1d(units) if unit == 0 else [])
+    return spikes
 
-for fname in mat_files:
-    print(f"\n Processing {fname} ...")
-    T = load_mat_session(os.path.join(data_dir, fname))
-    X, _ = extract_firing_rate(T, label_type='slant')
+def get_event_time(trial, eid):
+    if not hasattr(trial, 'EID') or not hasattr(trial, 'EventT'):
+        return None
+    eids = np.atleast_1d(trial.EID)
+    times = np.atleast_1d(trial.EventT)
+    idx = np.where(eids == eid)[0]
+    return times[idx[0]] if len(idx) > 0 else None
 
-    if len(X) == 0 or X.shape[1] < 2:
-        print("No valid trials or too few neurons.")
-        continue
+def build_neuron_map(trial):
+    neuron_map = []
+    for tt in range(1, 9):
+        field = f"UnitT_TT{tt}"
+        if hasattr(trial, field):
+            units = getattr(trial, field)
+            if isinstance(units, (list, tuple, np.ndarray)) and hasattr(units, '__len__'):
+                if isinstance(units, np.ndarray) and units.dtype != object:
+                    neuron_map.append((tt, 0))
+                else:
+                    for i in range(len(units)):
+                        neuron_map.append((tt, i))
+            else:
+                neuron_map.append((tt, 0))
+    return neuron_map
 
-    # get first 30 neurons
-    X = X[:, :30] if X.shape[1] > 30 else X
+def compute_latency_matrix(spikes_by_trial, align_times, window):
+    num_neurons = len(spikes_by_trial[0])
+    num_trials = len(spikes_by_trial)
+    latency_mat = np.full((num_neurons, num_trials), np.nan)
+    for i in range(num_neurons):
+        for j in range(num_trials):
+            spikes = spikes_by_trial[j][i]
+            aligned = np.array(spikes) - align_times[j]
+            trial_spikes = aligned[(aligned >= window[0]) & (aligned <= window[1])]
+            if len(trial_spikes) > 0:
+                latency_mat[i, j] = trial_spikes[0]
+    return latency_mat
 
-    # Matrix calculation
-    corr_matrix = np.corrcoef(X.T) #Transpose of matrix
+def compute_log_corr_matrix(spikes_by_trial, align_times, window):
+    num_neurons = len(spikes_by_trial[0])
+    num_trials = len(spikes_by_trial)
+    rate_mat = np.full((num_neurons, num_trials), np.nan)
+    for i in range(num_neurons):
+        for j in range(num_trials):
+            spikes = spikes_by_trial[j][i]
+            aligned = np.array(spikes) - align_times[j]
+            trial_spikes = aligned[(aligned >= window[0]) & (aligned <= window[1])]
+            rate_mat[i, j] = len(trial_spikes) / (window[1] - window[0])
+    log_rate = np.log(rate_mat + EPS)
+    return np.corrcoef(np.nan_to_num(log_rate))
 
-    # Heatmap
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(corr_matrix, cmap='coolwarm', vmin=-1, vmax=1, square=True)
-    plt.title(f"Neuron Correlation Matrix - {fname}")
-    plt.xlabel("Neuron Index")
-    plt.ylabel("Neuron Index")
+def draw_graph(neuron_count, matrix, label, fname):
+    G = nx.Graph()
+    for i in range(neuron_count):
+        G.add_node(i)
+    for i in range(neuron_count):
+        for j in range(i+1, neuron_count):
+            value = matrix[i, j]
+            G.add_edge(i, j, weight=value)
+
+    pos = nx.spring_layout(G, seed=42)
+    edge_labels = nx.get_edge_attributes(G, 'weight')
+    plt.figure(figsize=(8, neuron_count / 1.5))
+    nx.draw(G, pos, with_labels=True, node_color='skyblue', edge_color='gray', node_size=800)
+    nx.draw_networkx_edge_labels(G, pos, edge_labels={k: f"{v:.2f}" for k, v in edge_labels.items()}, font_size=8)
+    plt.title(label)
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, f"heatmap_corr_{fname}.png"))
+    plt.savefig(fname)
     plt.close()
 
-    # Construct the connectivity graph
-    threshold = 0.5
-    # construct adjacency matrix
-    adj = (np.abs(corr_matrix) > threshold).astype(int)
-    # don't connect itself
-    np.fill_diagonal(adj, 0)
-    # Build an undirected graph
-    G = nx.from_numpy_array(adj)
+def analyze_file(fname):
+    print(f"\n[Graph View] {fname}")
+    T = load_mat_session(os.path.join("./data", fname))
+    if len(T) == 0:
+        print("[WARN] Empty session")
+        return
 
-    # centrality measures
-    degree_dict = dict(G.degree())
-    degree_centrality = nx.degree_centrality(G)
-    betweenness = nx.betweenness_centrality(G)
-    closeness = nx.closeness_centrality(G)
+    neuron_map = build_neuron_map(T[0])
+    all_spikes, stim_ons = [], []
+    for trial in T:
+        spikes = extract_spike_times(trial, neuron_map)
+        stim_on = get_event_time(trial, STIM_ON_ID)
+        if stim_on is None:
+            continue
+        all_spikes.append(spikes)
+        stim_ons.append(stim_on)
 
-    with open(os.path.join(output_dir,f"centraility_{fname}.txt"),'w') as f:
-        f.write("Neuron\tDegree\tDegCenter\tBetweeness\tCloseness\n")
-        for n in G.nodes():
-            # Keep 4 digits after the decimal point
-            f.write(f"{n}\t{degree_dict[n]}\t{degree_centrality[n]:.4f}\t{betweenness[n]:.4f}\t{closeness[n]:.4f}\n")
+    all_spikes = np.array(all_spikes, dtype=object)
+    stim_ons = np.array(stim_ons)
 
-    plt.figure(figsize=(8, 8))
-    nx.draw_networkx(G, node_color='skyblue', with_labels=True)
-    plt.title(f"Neuron Connectivity Graph (|r| > {threshold}) - {fname}")
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, f"graph_corr_{fname}.png"))
-    plt.close()
+    lat_mat = compute_latency_matrix(all_spikes, stim_ons, window=(0, 0.5))
+    log_corr = compute_log_corr_matrix(all_spikes, stim_ons, window=(0, 0.5))
 
-    print(f"Done: heatmap + graph saved for {fname}")
+    mean_latency = np.nanmean(lat_mat, axis=1)
+    latency_diff = np.abs(mean_latency[:, None] - mean_latency[None, :])
+
+    neuron_count = len(mean_latency)
+    draw_graph(neuron_count, latency_diff, "Latency Difference Graph", os.path.join(output_dir, f"latency_diff_graph_{os.path.splitext(fname)[0]}.png"))
+    draw_graph(neuron_count, log_corr, "Log Correlation Graph", os.path.join(output_dir, f"log_corr_graph_{os.path.splitext(fname)[0]}.png"))
+
+def main():
+    files = [f for f in os.listdir("./data") if f.endswith(".mat")]
+    for f in files:
+        analyze_file(f)
+
+if __name__ == "__main__":
+    main()
