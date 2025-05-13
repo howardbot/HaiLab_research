@@ -11,7 +11,7 @@ STIM_ON_ID = 118
 STIM_OFF_ID = 120
 EPS = 1e-3
 
-output_dir = "task56_graph"
+output_dir = "latency_Connectivity"
 os.makedirs(output_dir, exist_ok=True)
 
 def extract_spike_times(trial, neuron_map):
