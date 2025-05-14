@@ -1,6 +1,5 @@
 # latency_corr_graph.py
 
-
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -8,7 +7,6 @@ import networkx as nx
 from src.Loader import load_mat_session
 
 STIM_ON_ID = 118
-STIM_OFF_ID = 120
 EPS = 1e-3
 
 output_dir = "latency_Connectivity"
@@ -57,19 +55,6 @@ def build_neuron_map(trial):
                 neuron_map.append((tt, 0))
     return neuron_map
 
-def compute_latency_matrix(spikes_by_trial, align_times, window):
-    num_neurons = len(spikes_by_trial[0])
-    num_trials = len(spikes_by_trial)
-    latency_mat = np.full((num_neurons, num_trials), np.nan)
-    for i in range(num_neurons):
-        for j in range(num_trials):
-            spikes = spikes_by_trial[j][i]
-            aligned = np.array(spikes) - align_times[j]
-            trial_spikes = aligned[(aligned >= window[0]) & (aligned <= window[1])]
-            if len(trial_spikes) > 0:
-                latency_mat[i, j] = trial_spikes[0]
-    return latency_mat
-
 def compute_log_corr_matrix(spikes_by_trial, align_times, window):
     num_neurons = len(spikes_by_trial[0])
     num_trials = len(spikes_by_trial)
@@ -83,18 +68,23 @@ def compute_log_corr_matrix(spikes_by_trial, align_times, window):
     log_rate = np.log(rate_mat + EPS)
     return np.corrcoef(np.nan_to_num(log_rate))
 
-def draw_graph(neuron_count, matrix, label, fname):
+def draw_graph(neuron_count, matrix, label, fname, threshold=0.5):
     G = nx.Graph()
     for i in range(neuron_count):
         G.add_node(i)
     for i in range(neuron_count):
         for j in range(i+1, neuron_count):
             value = matrix[i, j]
-            G.add_edge(i, j, weight=value)
+            if abs(value) > threshold:
+                G.add_edge(i, j, weight=value)
 
-    pos = nx.spring_layout(G, seed=42)
+    pos = nx.spring_layout(G, seed=42, k=10 / np.sqrt(neuron_count), iterations=100)
+    for i in pos:
+        x, y = pos[i]
+        pos[i] = (x, 0.7 * y - 0.3 * i)  # Small index goes up
+
     edge_labels = nx.get_edge_attributes(G, 'weight')
-    plt.figure(figsize=(8, neuron_count / 1.5))
+    plt.figure(figsize=(12, neuron_count / 1.2))  # zoom in
     nx.draw(G, pos, with_labels=True, node_color='skyblue', edge_color='gray', node_size=800)
     nx.draw_networkx_edge_labels(G, pos, edge_labels={k: f"{v:.2f}" for k, v in edge_labels.items()}, font_size=8)
     plt.title(label)
@@ -122,15 +112,11 @@ def analyze_file(fname):
     all_spikes = np.array(all_spikes, dtype=object)
     stim_ons = np.array(stim_ons)
 
-    lat_mat = compute_latency_matrix(all_spikes, stim_ons, window=(0, 0.5))
     log_corr = compute_log_corr_matrix(all_spikes, stim_ons, window=(0, 0.5))
-
-    mean_latency = np.nanmean(lat_mat, axis=1)
-    latency_diff = np.abs(mean_latency[:, None] - mean_latency[None, :])
-
-    neuron_count = len(mean_latency)
-    draw_graph(neuron_count, latency_diff, "Latency Difference Graph", os.path.join(output_dir, f"latency_diff_graph_{os.path.splitext(fname)[0]}.png"))
-    draw_graph(neuron_count, log_corr, "Log Correlation Graph", os.path.join(output_dir, f"log_corr_graph_{os.path.splitext(fname)[0]}.png"))
+    neuron_count = len(neuron_map)
+    draw_graph(neuron_count, log_corr, "Log Correlation Graph",
+               os.path.join(output_dir, f"log_corr_graph_{os.path.splitext(fname)[0]}.png"),
+               threshold=0.5)
 
 def main():
     files = [f for f in os.listdir("./data") if f.endswith(".mat")]
