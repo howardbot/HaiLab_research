@@ -1,5 +1,3 @@
-# latency_corr_graph.py
-
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -78,16 +76,53 @@ def draw_graph(neuron_count, matrix, label, fname, threshold=0.5):
             if abs(value) > threshold:
                 G.add_edge(i, j, weight=value)
 
-    pos = nx.spring_layout(G, seed=42, k=10 / np.sqrt(neuron_count), iterations=100)
-    for i in pos:
-        x, y = pos[i]
-        pos[i] = (x, 0.7 * y - 0.3 * i)  # Small index goes up
+    # === Electrode-based layered layout ===
+    electrode_layers = {}
+    for idx, (tt, _) in enumerate(neuron_map):  # use global neuron_map
+        if tt not in electrode_layers:
+            electrode_layers[tt] = []
+        electrode_layers[tt].append(idx)
 
+    pos = {}
+    sorted_electrodes = sorted(electrode_layers.keys())
+    layer_y = {}
+    for layer_idx, tt in enumerate(sorted_electrodes):
+        neurons = electrode_layers[tt]
+        x_start = - (len(neurons) - 1) / 2
+        y = -layer_idx
+        layer_y[tt] = y
+        for i, nid in enumerate(neurons):
+            x = x_start + i
+            pos[nid] = (x, y)
+
+    # === Draw Graph with Edge Width by Correlation ===
     edge_labels = nx.get_edge_attributes(G, 'weight')
-    plt.figure(figsize=(12, neuron_count / 1.2))  # zoom in
-    nx.draw(G, pos, with_labels=True, node_color='skyblue', edge_color='gray', node_size=800)
-    nx.draw_networkx_edge_labels(G, pos, edge_labels={k: f"{v:.2f}" for k, v in edge_labels.items()}, font_size=8)
+    weights = []
+    for (u, v) in G.edges():
+        w = abs(G[u][v]['weight'])
+        weights.append(0.1 + 10 * w)  # range：0.5 ~ 4.0
+
+    plt.figure(figsize=(12, max(5, neuron_count / 2.5)))
+    nx.draw(
+        G, pos,
+        with_labels=True,
+        node_color='skyblue',
+        edge_color='gray',
+        width=weights,
+        node_size=800
+    )
+    nx.draw_networkx_edge_labels(
+        G, pos,
+        edge_labels={k: f"{v:.2f}" for k, v in edge_labels.items()},
+        font_size=8
+    )
+
+    # === Add Electrode Labels ===
+    for tt in sorted_electrodes:
+        plt.text(-5, layer_y[tt], f"TT{tt}", fontsize=10, verticalalignment='center', horizontalalignment='right')
+
     plt.title(label)
+    plt.axis('off')
     plt.tight_layout()
     plt.savefig(fname)
     plt.close()
@@ -99,6 +134,7 @@ def analyze_file(fname):
         print("[WARN] Empty session")
         return
 
+    global neuron_map
     neuron_map = build_neuron_map(T[0])
     all_spikes, stim_ons = [], []
     for trial in T:
@@ -114,9 +150,12 @@ def analyze_file(fname):
 
     log_corr = compute_log_corr_matrix(all_spikes, stim_ons, window=(0, 0.5))
     neuron_count = len(neuron_map)
-    draw_graph(neuron_count, log_corr, "Log Correlation Graph",
-               os.path.join(output_dir, f"log_corr_graph_{os.path.splitext(fname)[0]}.png"),
-               threshold=0.5)
+    draw_graph(
+        neuron_count, log_corr,
+        "Log Correlation Graph",
+        os.path.join(output_dir, f"log_corr_graph_{os.path.splitext(fname)[0]}.png"),
+        threshold=0.5
+    )
 
 def main():
     files = [f for f in os.listdir("./data") if f.endswith(".mat")]

@@ -1,4 +1,4 @@
-# fr_recording.py（任务 1–4：补充 histogram debug 打印）
+# fr_recording.py task1-4
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -51,19 +51,36 @@ def build_neuron_map(trial):
                 neuron_map.append((tt, 0))
     return neuron_map
 
-def compute_population_rate(spike_trials, bin_size=0.01, duration=1.0):
+def compute_trialwise_population_rate(spike_trials, bin_size=0.01, duration=1.0):
+    """
+    Computes the trial-averaged population firing rate.
+
+    Parameters:
+        spike_trials: list of shape [neuron][trial], each element contains spike times (aligned)
+        bin_size: bin width in seconds
+        duration: total duration of window
+
+    Returns:
+        rate: 1D array of average firing rate (Hz) per time bin
+    """
+    num_trials = len(spike_trials[0])  # assume all neurons have same number of trials
+    num_neurons = len(spike_trials)
     num_bins = int(duration / bin_size)
-    rate = np.zeros(num_bins)
-    count = 0
-    for neuron_trials in spike_trials:
-        for spikes in neuron_trials:
+
+    all_trial_rates = np.zeros((num_trials, num_bins))
+
+    for t in range(num_trials):
+        trial_hist = np.zeros(num_bins)
+        for n in range(num_neurons):
+            spikes = spike_trials[n][t]
             hist, _ = np.histogram(spikes, bins=num_bins, range=(0, duration))
-            rate += hist
-            count += 1
-    if count > 0:
-        rate = rate / count
-        rate /= bin_size
-    return rate
+            trial_hist += hist
+        trial_hist = trial_hist / num_neurons       # average across neurons
+        trial_hist = trial_hist / bin_size          # convert to Hz
+        all_trial_rates[t] = trial_hist             # store for trial t
+
+    return np.mean(all_trial_rates, axis=0)         # average across trials
+
 
 def plot_raster_and_rate(all_spikes, align_times, neuron_map, fname, label, window, output_dir):
     import matplotlib.gridspec as gridspec
@@ -107,7 +124,7 @@ def plot_raster_and_rate(all_spikes, align_times, neuron_map, fname, label, wind
     ax_raster.set_yticks(ytick_positions)
     ax_raster.set_yticklabels([f"{i}" for i in range(num_neurons)])
 
-    rate = compute_population_rate(pop_spikes, bin_size=bin_size, duration=duration)
+    rate = compute_trialwise_population_rate(pop_spikes, bin_size=bin_size, duration=duration)
     ax_rate.plot(time_bins[:len(rate)], rate, color="black")
     ax_rate.fill_between(time_bins[:len(rate)], 0, rate, alpha=0.3)
     ax_rate.set_ylabel("Rate (Hz)")
