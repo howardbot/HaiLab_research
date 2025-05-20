@@ -1,10 +1,8 @@
-# fr_recording.py task1-4
 import os
 import numpy as np
 import matplotlib.pyplot as plt
 from src.Loader import load_mat_session
 
-# Constants
 STIM_ON_ID = 118
 STIM_OFF_ID = 120
 
@@ -52,18 +50,7 @@ def build_neuron_map(trial):
     return neuron_map
 
 def compute_trialwise_population_rate(spike_trials, bin_size=0.01, duration=1.0):
-    """
-    Computes the trial-averaged population firing rate.
-
-    Parameters:
-        spike_trials: list of shape [neuron][trial], each element contains spike times (aligned)
-        bin_size: bin width in seconds
-        duration: total duration of window
-
-    Returns:
-        rate: 1D array of average firing rate (Hz) per time bin
-    """
-    num_trials = len(spike_trials[0])  # assume all neurons have same number of trials
+    num_trials = len(spike_trials[0])
     num_neurons = len(spike_trials)
     num_bins = int(duration / bin_size)
 
@@ -75,12 +62,11 @@ def compute_trialwise_population_rate(spike_trials, bin_size=0.01, duration=1.0)
             spikes = spike_trials[n][t]
             hist, _ = np.histogram(spikes, bins=num_bins, range=(0, duration))
             trial_hist += hist
-        trial_hist = trial_hist / num_neurons       # average across neurons
-        trial_hist = trial_hist / bin_size          # convert to Hz
-        all_trial_rates[t] = trial_hist             # store for trial t
+        trial_hist = trial_hist / num_neurons
+        trial_hist = trial_hist / bin_size
+        all_trial_rates[t] = trial_hist
 
-    return np.mean(all_trial_rates, axis=0)         # average across trials
-
+    return np.mean(all_trial_rates, axis=0)
 
 def plot_raster_and_rate(all_spikes, align_times, neuron_map, fname, label, window, output_dir):
     import matplotlib.gridspec as gridspec
@@ -124,7 +110,25 @@ def plot_raster_and_rate(all_spikes, align_times, neuron_map, fname, label, wind
     ax_raster.set_yticks(ytick_positions)
     ax_raster.set_yticklabels([f"{i}" for i in range(num_neurons)])
 
+    # Compute trial-averaged rate
     rate = compute_trialwise_population_rate(pop_spikes, bin_size=bin_size, duration=duration)
+
+    # Debug: also compute pooled rate for comparison
+    num_bins = len(rate)
+    pooled_hist = np.zeros(num_bins)
+    total_count = 0
+    for neuron_trials in pop_spikes:
+        for spikes in neuron_trials:
+            hist, _ = np.histogram(spikes, bins=num_bins, range=(0, duration))
+            pooled_hist += hist
+            total_count += 1
+    pooled_rate = pooled_hist / total_count / bin_size
+
+    # Debug print
+    print(f"[DEBUG] {label} - Mean trial-averaged FR: {np.mean(rate):.2f} Hz")
+    print(f"[DEBUG] {label} - Mean pooled FR:         {np.mean(pooled_rate):.2f} Hz")
+
+    # Plot trial-averaged firing rate
     ax_rate.plot(time_bins[:len(rate)], rate, color="black")
     ax_rate.fill_between(time_bins[:len(rate)], 0, rate, alpha=0.3)
     ax_rate.set_ylabel("Rate (Hz)")
@@ -133,7 +137,7 @@ def plot_raster_and_rate(all_spikes, align_times, neuron_map, fname, label, wind
     for x in time_bins:
         ax_rate.axvline(x, color='gray', alpha=0.2, linestyle='--', linewidth=0.3)
 
-    # Debug: latency histogram
+    # Optional: latency histogram (pre-stim)
     if label.lower() == "pre stim":
         debug_hist, debug_bins = np.histogram(all_aligned_latencies, bins=10, range=window)
         print(f"[DEBUG] Pre-stim latency histogram (bin counts): {debug_hist}")
