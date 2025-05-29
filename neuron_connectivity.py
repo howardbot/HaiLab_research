@@ -7,7 +7,7 @@ from src.Loader import load_mat_session
 STIM_ON_ID = 118
 EPS = 1e-3
 
-output_dir = "latency_Connectivity"
+output_dir = "neuron_Connectivity"
 os.makedirs(output_dir, exist_ok=True)
 
 def extract_spike_times(trial, neuron_map):
@@ -164,3 +164,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+## TODO Cross-correlation analysis
+

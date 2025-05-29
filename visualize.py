@@ -4,7 +4,7 @@ from src.Loader import load_mat_session
 from src.Features import extract_firing_rate
 import os
 import numpy as np
-output_dir = "./Screenshots"
+output_dir = "./Visualization_per_neuron_act"
 os.makedirs(output_dir,exist_ok=True)
 data_dir = "./data"
 mat_files = [f for f in os.listdir(data_dir) if f.endswith(".mat")]
