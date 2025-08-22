@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Three-phase Raster + Population Rate
+Coverage-aware pooled raster + PSTH for Pre / During / Post.
 
-Key choices:
-- Pre/During are aligned to STIM_ON (118).
-- Post is aligned to SACCADE_CHOICE_ON (120).
-- Robust unit parsing across list/tuple/object-array/ndarray.
-- Debug counters print how many times 120/130/131 appear in the session.
+Rules:
+- Pre:    [StimOn-0.5, StimOn] (requires EID=118), clip to trial bounds
+- During: [StimOn, min(StimOn+0.5, ChoiceOn if present)], clip to trial bounds
+- Post:   [ChoiceOn, ChoiceOn+0.5] (requires EID=120), clip to trial bounds
+
+Coverage-aware PSTH:
+For each time bin, divide total spike counts by (num_neurons * total covered seconds in that bin).
+This avoids downward bias when some trials don't fully cover a bin.
+
+Generates one PNG per phase per session under ./raster_psth_coverage
 """
 
 import os
@@ -15,19 +20,17 @@ import numpy as np
 import matplotlib.pyplot as plt
 from src.Loader import load_mat_session
 
-# -------- Event IDs --------
+# ---- Event IDs ----
+TRIAL_START_ID = 111
+TRIAL_END_ID = 112
 STIM_ON_ID = 118
-SACCADE_CHOICE_ON_ID = 120          # Post alignment anchor
-STIM_OFF_IDS = (130, 131)           # Only for diagnostics, not used for alignment
+CHOICE_ON_ID = 120
 
-# =============== Robust unit parsing ===============
+# ---- Parameters ----
+BIN_SIZE = 0.01  # 10 ms bins
+OUT_DIR = "./raster_psth_coverage"
+
 def _iter_units(units):
-    """
-    Normalize various storage formats into a list of 1D np.ndarrays (spike times):
-      - list/tuple/object-array: multiple units -> list of arrays
-      - numeric ndarray: 1D -> single unit; 2D -> each column is a unit
-      - anything else -> treated as a single unit
-    """
     if units is None:
         return []
     if isinstance(units, (list, tuple)):
@@ -39,272 +42,244 @@ def _iter_units(units):
         if arr.ndim == 1:
             return [arr]
         if arr.ndim == 2:
-            # assume (time, unit) with units on columns
             return [np.atleast_1d(arr[:, i]) for i in range(arr.shape[1])]
     return [np.atleast_1d(units)]
 
 def build_neuron_map(trial):
-    """Create a [(tt, unit_idx), ...] map using the first trial's available TT blocks."""
-    neuron_map = []
+    nm = []
     for tt in range(1, 9):
-        field = f"UnitT_TT{tt}"
-        if hasattr(trial, field):
-            units = _iter_units(getattr(trial, field))
+        f = f"UnitT_TT{tt}"
+        if hasattr(trial, f):
+            units = _iter_units(getattr(trial, f))
             for i in range(len(units)):
-                neuron_map.append((tt, i))
-    return neuron_map
+                nm.append((tt, i))
+    return nm
 
 def extract_spike_times(trial, neuron_map):
-    """Return absolute spike times per neuron for this trial following neuron_map layout."""
-    spikes = []
+    out = []
     for tt, unit in neuron_map:
-        field = f"UnitT_TT{tt}"
-        if not hasattr(trial, field):
-            spikes.append([])
-            continue
-        units = _iter_units(getattr(trial, field))
-        spikes.append(units[unit] if unit < len(units) else [])
-    return spikes
+        f = f"UnitT_TT{tt}"
+        if not hasattr(trial, f):
+            out.append([]); continue
+        units = _iter_units(getattr(trial, f))
+        out.append(units[unit] if unit < len(units) else [])
+    return out
 
 def _eids_to_int(eids):
-    """Convert trial.EID to int array (tolerant to float/strings)."""
-    eids = np.atleast_1d(eids)
+    e = np.atleast_1d(eids)
     try:
-        return np.rint(eids.astype(float)).astype(int)
+        return np.rint(e.astype(float)).astype(int)
     except Exception:
-        return np.array([int(str(x)) for x in eids], dtype=int)
+        return np.array([int(str(x)) for x in e], dtype=int)
 
-def get_first_event_time(trial, candidates):
-    """
-    Return the earliest timestamp among candidate EIDs for this trial; None if not present.
-    """
+def _event_time(trial, eid):
     if not hasattr(trial, 'EID') or not hasattr(trial, 'EventT'):
         return None
-    eids_int = _eids_to_int(trial.EID)
-    times = np.atleast_1d(trial.EventT)
-    if times.size != eids_int.size:
-        # Malformed data: lengths must match. Skip this trial.
+    eids = _eids_to_int(trial.EID)
+    ts = np.atleast_1d(trial.EventT)
+    if ts.size != eids.size or ts.size == 0:
         return None
-    idxs = np.where(np.isin(eids_int, np.array(candidates, dtype=int)))[0]
+    idxs = np.where(eids == int(eid))[0]
     if idxs.size == 0:
         return None
-    first_idx = idxs[np.argmin(times[idxs])]
-    return float(times[first_idx])
+    i = idxs[np.argmin(ts[idxs])]
+    return float(ts[i])
 
-# =============== Trial-wise aggregation (Hz per neuron) ===============
-def compute_population_rate_nanaware(all_spikes, bin_size=0.01, window=(-0.5, 0.5)):
-    """
-    Inputs:
-      all_spikes: list over trials, each is list over neurons -> 1D arrays of spike times (relative).
-    Returns:
-      time_axis: left edges of bins
-      avg_rate:  average population rate per bin, in Hz per neuron
-      count_trials: number of contributing trials per bin (constant across the window)
-    """
-    num_trials = len(all_spikes)
-    num_neurons = len(all_spikes[0]) if num_trials > 0 else 0
-    edges = np.arange(window[0], window[1] + bin_size, bin_size)
-    num_bins = len(edges) - 1
+def _trial_bounds(trial):
+    if not hasattr(trial, 'EID') or not hasattr(trial, 'EventT'):
+        return None, None
+    eids = _eids_to_int(trial.EID)
+    ts = np.atleast_1d(trial.EventT)
+    if ts.size != eids.size or ts.size == 0:
+        return None, None
+    tmin, tmax = float(np.min(ts)), float(np.max(ts))
+    t_start = _event_time(trial, TRIAL_START_ID)
+    t_end = _event_time(trial, TRIAL_END_ID)
+    if t_start is None: t_start = tmin
+    if t_end is None: t_end = tmax
+    return t_start, t_end
 
-    sum_rate = np.zeros(num_bins, dtype=float)
-    total_trials = 0
+def _compute_phase_windows(trial):
+    stim = _event_time(trial, STIM_ON_ID)
+    choice = _event_time(trial, CHOICE_ON_ID)
+    t0, t1 = _trial_bounds(trial)
+    windows = {}
 
-    for t in range(num_trials):
-        trial_hist = np.zeros(num_bins, dtype=float)
-        for n in range(num_neurons):
-            s = np.asarray(all_spikes[t][n], dtype=float)
-            if s.size:
-                s = s[(s >= window[0]) & (s <= window[1])]
-                if s.size:
-                    h, _ = np.histogram(s, bins=edges)  # counts per bin
-                    trial_hist += h
-        # Convert to Hz per neuron
-        trial_rate = (trial_hist / max(num_neurons, 1)) / bin_size
-        sum_rate += trial_rate
-        total_trials += 1
+    # Pre
+    if stim is not None and t0 is not None:
+        a0 = max(stim - 0.5, t0)
+        a1 = min(stim, t1 if t1 is not None else np.inf)
+        if a1 - a0 > 0:
+            windows['pre'] = (a0, a1)
 
-    if total_trials == 0:
-        return edges[:-1], np.full(num_bins, np.nan), np.zeros(num_bins, dtype=int)
+    # During
+    if stim is not None and t0 is not None:
+        nominal_end = stim + 0.5
+        if choice is not None:
+            nominal_end = min(nominal_end, choice)
+        a0 = max(stim, t0)
+        a1 = min(nominal_end, t1 if t1 is not None else np.inf)
+        if a1 - a0 > 0:
+            windows['during'] = (a0, a1)
 
-    avg_rate = sum_rate / total_trials
-    count_trials = np.full(num_bins, total_trials, dtype=int)
-    return edges[:-1], avg_rate, count_trials
+    # Post
+    if choice is not None and t0 is not None:
+        a0 = max(choice, t0)
+        a1 = min(choice + 0.5, t1 if t1 is not None else np.inf)
+        if a1 - a0 > 0:
+            windows['post'] = (a0, a1)
 
-# =============== Plotting (pooled-by-neuron raster + population rate) ===============
-def plot_raster_and_rate(all_spikes_abs, align_times, neuron_map, fname, label, window,
-                         output_dir, bin_size=0.01):
-    import matplotlib.gridspec as gridspec
-    num_trials = len(all_spikes_abs)
-    num_neurons = len(neuron_map)
-    if num_trials == 0 or num_neurons == 0:
-        return
+    return windows
 
-    colors = plt.cm.tab20(np.linspace(0, 1, num_neurons))
-    spacing, height = 1.2, 0.8
-    ytick_positions = [i * spacing + 1 for i in range(num_neurons)]
-
-    fig = plt.figure(figsize=(28, 9))
-    gs = gridspec.GridSpec(2, 1, height_ratios=[3, 1], hspace=0.25)
-    ax_raster = fig.add_subplot(gs[0])
-    ax_rate = fig.add_subplot(gs[1])
-
-    # Convert absolute to relative spike times with respect to alignment
-    all_spikes_rel = []
-    for trial_idx in range(num_trials):
-        rel_trial = []
-        for n_idx in range(num_neurons):
-            abs_s = np.asarray(all_spikes_abs[trial_idx][n_idx], dtype=float)
-            if abs_s.size:
-                rel_s = abs_s - align_times[trial_idx]
-                rel_s = rel_s[(rel_s >= window[0]) & (rel_s <= window[1])]
-            else:
-                rel_s = np.array([], dtype=float)
-            rel_trial.append(rel_s)
-        all_spikes_rel.append(rel_trial)
-
-    # Top: pooled-by-neuron raster across trials
-    for n_idx in range(num_neurons):
-        color = colors[n_idx % len(colors)]
-        center = ytick_positions[n_idx]
-        spike_times = [t_s[n_idx] for t_s in all_spikes_rel]
-        spike_flat = (np.concatenate([s for s in spike_times if s.size])
-                      if any(s.size for s in spike_times) else np.array([]))
-        if spike_flat.size:
-            ax_raster.vlines(spike_flat, center - height/2, center + height/2,
-                             color=color, linewidth=0.6)
-
-    ax_raster.set_title(f"{label} Raster (trials pooled by neuron) — {fname}")
-    ax_raster.set_ylabel("Neuron Index")
-    ax_raster.set_yticks(ytick_positions)
-    ax_raster.set_yticklabels([f"{i}" for i in range(num_neurons)])
-    ax_raster.set_xlim(window)
-
-    # Bottom: population rate + trial count (constant)
-    time_axis, avg_rate, n_contrib = compute_population_rate_nanaware(
-        all_spikes_rel, bin_size=bin_size, window=window
-    )
-    ax_rate.plot(time_axis, avg_rate, linewidth=1.6, color="black",
-                 label=f"Avg rate (Hz / neuron), bin={bin_size*1000:.0f} ms")
-    ax_rate.fill_between(time_axis, 0, np.nan_to_num(avg_rate, nan=0.0), alpha=0.25)
-    ax_rate.set_ylabel("Rate (Hz / neuron)")
-    ax_rate.set_xlabel(f"Time (s) from {label.lower()}")
-    ax_rate.set_xlim(window)
-
-    ax2 = ax_rate.twinx()
-    ax2.plot(time_axis, n_contrib, alpha=0.6, linestyle='--', linewidth=1.0,
-             label="Trials contributing (constant)")
-    ax2.set_ylabel("Trials contributing")
-    ax2.set_ylim(bottom=0)
-
-    ax_rate.legend(loc="upper left")
-    ax2.legend(loc="upper right")
-
-    os.makedirs(output_dir, exist_ok=True)
-    save_name = f"raster_rate_nanaware_{label.lower().replace(' ', '_')}_{os.path.splitext(fname)[0]}.png"
-    plt.savefig(os.path.join(output_dir, save_name), dpi=150, bbox_inches='tight')
-    plt.close()
-
-# =============== Optional: trial-by-trial raster for selected neurons ===============
-def plot_trial_by_trial_raster(all_spikes_abs, align_times, neuron_indices,
-                               fname, label, window, output_dir):
-    """
-    Helpful for showing colleagues that trial-wise sparsity matches the averaged Hz.
-    Draws trial on the y-axis for each selected neuron.
-    """
-    num_trials = len(all_spikes_abs)
-    for n_idx in neuron_indices:
-        fig, ax = plt.subplots(figsize=(10, 6))
-        for t in range(num_trials):
-            s_abs = np.asarray(all_spikes_abs[t][n_idx], dtype=float)
-            s_rel = s_abs - align_times[t]
-            s_rel = s_rel[(s_rel >= window[0]) & (s_rel <= window[1])]
-            if s_rel.size:
-                ax.vlines(s_rel, t + 0.4, t + 1.4, linewidth=0.6)
-        ax.set_title(f"{label} Trial-by-trial Raster — Neuron {n_idx} — {fname}")
-        ax.set_ylabel("Trial")
-        ax.set_xlabel(f"Time (s) from {label.lower()}")
-        ax.set_xlim(window)
-        plt.tight_layout()
-        os.makedirs(output_dir, exist_ok=True)
-        out = f"trial_raster_{label.lower().replace(' ', '_')}_neuron{n_idx}_{os.path.splitext(fname)[0]}.png"
-        plt.savefig(os.path.join(output_dir, out), dpi=150, bbox_inches='tight')
-        plt.close()
-
-# =============== Per-file processing (with event counters) ===============
-def analyze_file(fname, window, align_to_list, label, output_dir,
-                 bin_size=0.01, show_trial_rasters=False, trial_neurons=(0,)):
-    print(f"\n[Processing] {fname} [{label}]")
-    T = load_mat_session(os.path.join("./data", fname))
+def pooled_raster_and_psth_coverage(T, fname, bin_size=BIN_SIZE):
     if len(T) == 0:
-        print("[WARN] Empty session.")
         return
 
     neuron_map = build_neuron_map(T[0])
-    all_spikes_abs, align_times = [], []
-
-    # Count occurrences of 120 / 130 / 131 across the session
-    cnt_120 = cnt_130 = cnt_131 = 0
-
-    for trial in T:
-        if hasattr(trial, 'EID'):
-            eids_int = _eids_to_int(trial.EID)
-            cnt_120 += int(np.sum(eids_int == 120))
-            cnt_130 += int(np.sum(eids_int == 130))
-            cnt_131 += int(np.sum(eids_int == 131))
-
-        align = get_first_event_time(trial, align_to_list)
-        if align is None:
-            continue
-        spikes = extract_spike_times(trial, neuron_map)
-        all_spikes_abs.append(spikes)
-        align_times.append(align)
-
-    print(f"[DEBUG] {fname}: CHOICE_ON(120)={cnt_120}, OFF(130)={cnt_130}, OFF(131)={cnt_131}")
-
-    if len(all_spikes_abs) == 0:
-        print("[WARN] No valid trials.")
+    num_neurons = len(neuron_map)
+    if num_neurons == 0:
         return
 
-    all_spikes_abs = np.array(all_spikes_abs, dtype=object)
-    align_times = np.array(align_times, dtype=float)
+    # Collect per-trial absolute spikes
+    trial_spikes_abs = [extract_spike_times(tr, neuron_map) for tr in T]
 
-    # Main figure: pooled-by-neuron raster + population rate
-    plot_raster_and_rate(all_spikes_abs, align_times, neuron_map, fname, label,
-                         window, output_dir, bin_size=bin_size)
+    # Build phase windows per trial
+    trial_windows = [ _compute_phase_windows(tr) for tr in T ]
 
-    # Optional per-trial rasters for a few representative neurons
-    if show_trial_rasters and len(neuron_map) > 0:
-        sel = [n for n in trial_neurons if 0 <= n < len(neuron_map)]
-        if sel:
-            plot_trial_by_trial_raster(all_spikes_abs, align_times, sel, fname, label,
-                                       window, output_dir)
+    phases = {
+        'pre':  ('Pre Stim',  -0.5, 0.0),  # relative range for plotting only
+        'during': ('During Stim', 0.0, 0.5),
+        'post': ('Post Stim', 0.0, 0.5),
+    }
 
-# =============== Entry point ===============
+    os.makedirs(OUT_DIR, exist_ok=True)
+
+    for key, (label, rel_lo, rel_hi) in phases.items():
+        # Determine absolute plot window per trial for this phase
+        # and also gather coverage-aware PSTH bins
+        # Set global relative axis for figure
+        edges_rel = np.arange(rel_lo, rel_hi + bin_size, bin_size)
+        num_bins = len(edges_rel) - 1
+        bin_spike_counts = np.zeros(num_bins, dtype=float)
+        bin_covered_sec = np.zeros(num_bins, dtype=float)
+
+        # Raster pooling: we'll pool spikes across trials per neuron in relative coords
+        pooled_rel_spikes_per_neuron = [ [] for _ in range(num_neurons) ]
+
+        any_trial = False
+
+        for tr_idx, tr in enumerate(T):
+            if key not in trial_windows[tr_idx]:
+                continue
+            any_trial = True
+            abs_start, abs_end = trial_windows[tr_idx][key]
+
+            # For PSTH coverage: compute overlap with each bin
+            # Bin k absolute interval is [abs_anchor + edges_rel[k], abs_anchor + edges_rel[k+1]]
+            # But here we don't have a single anchor; the window itself defines the absolute interval.
+            # We'll map bin edges into the trial-specific absolute window by linear interpolation:
+            # relative [rel_lo, rel_hi] -> absolute [abs_start, abs_end]
+            # abs_t = abs_start + (rel - rel_lo) * (abs_end - abs_start) / (rel_hi - rel_lo)
+            win_len_rel = (rel_hi - rel_lo)
+            abs_len = abs_end - abs_start
+            if win_len_rel <= 0 or abs_len <= 0:
+                continue
+
+            # Precompute mapping for edges
+            abs_edges = abs_start + (edges_rel - rel_lo) * (abs_len / win_len_rel)
+
+            # Count coverage per bin (overlap with [abs_edges[k], abs_edges[k+1]] ∩ [abs_start, abs_end])
+            # which is simply abs_edges[k+1] - abs_edges[k] = bin_size * scaling
+            # But due to clipping to trial bounds earlier, abs_edges are within [abs_start, abs_end] already.
+            # So per-bin covered seconds contributed by this trial equals (abs_edges[k+1] - abs_edges[k]).
+            per_bin_cover = abs_edges[1:] - abs_edges[:-1]
+            bin_covered_sec += per_bin_cover
+
+            # Count spikes per bin for all neurons
+            spikes_abs = trial_spikes_abs[tr_idx]
+            for n_idx in range(num_neurons):
+                s = np.asarray(spikes_abs[n_idx], dtype=float)
+                if s.size == 0:
+                    continue
+                # keep only spikes within the absolute window
+                s = s[(s >= abs_start) & (s <= abs_end)]
+                if s.size == 0:
+                    continue
+                # For raster pooling: convert to relative coords in [rel_lo, rel_hi] via linear map
+                s_rel = rel_lo + (s - abs_start) * (win_len_rel / abs_len)
+                pooled_rel_spikes_per_neuron[n_idx].append(s_rel)
+
+                # For PSTH: histogram using abs_edges
+                h, _ = np.histogram(s, bins=abs_edges)
+                bin_spike_counts += h
+
+        if not any_trial:
+            continue
+
+        # Compute coverage-aware rate per neuron (population average): divide by num_neurons and covered seconds
+        # rate_pop (Hz / neuron) per bin:
+        #   rate_bin = (bin_spike_counts / num_neurons) / bin_covered_sec
+        with np.errstate(divide='ignore', invalid='ignore'):
+            rate_per_bin = (bin_spike_counts / max(num_neurons,1)) / bin_covered_sec
+            rate_per_bin[~np.isfinite(rate_per_bin)] = np.nan
+
+        # ---- Plot ----
+        fig = plt.figure(figsize=(16, 8))
+        gs = fig.add_gridspec(2, 1, height_ratios=[3, 1], hspace=0.25)
+        ax_raster = fig.add_subplot(gs[0])
+        ax_psth = fig.add_subplot(gs[1])
+
+        # Raster (pooled-by-neuron across trials)
+        colors = plt.cm.tab20(np.linspace(0, 1, num_neurons))
+        spacing, height = 1.2, 0.8
+        yticks = []
+        ytick_labels = []
+        for n_idx in range(num_neurons):
+            center = n_idx * spacing + 1
+            yticks.append(center)
+            ytick_labels.append(str(n_idx))
+            if len(pooled_rel_spikes_per_neuron[n_idx]) == 0:
+                continue
+            s_rel = np.concatenate(pooled_rel_spikes_per_neuron[n_idx])
+            if s_rel.size:
+                ax_raster.vlines(s_rel, center - height/2, center + height/2,
+                                 color=colors[n_idx % len(colors)], linewidth=0.5)
+
+        ax_raster.set_title(f"{label} — coverage-aware pooled raster — {fname}")
+        ax_raster.set_ylabel("Neuron Index")
+        ax_raster.set_xlim(rel_lo, rel_hi)
+        ax_raster.set_yticks(yticks)
+        ax_raster.set_yticklabels(ytick_labels)
+
+        # PSTH
+        centers = edges_rel[:-1] + bin_size/2
+        ax_psth.plot(centers, rate_per_bin, lw=1.8, color='black', label="Rate (Hz / neuron), coverage-aware")
+        ax_psth.fill_between(centers, 0, np.nan_to_num(rate_per_bin, nan=0.0), alpha=0.25)
+        ax_psth.set_xlim(rel_lo, rel_hi)
+        ax_psth.set_xlabel(f"Time (s) from {label.lower()} (relative axis)")
+        ax_psth.set_ylabel("Rate (Hz / neuron)")
+
+        # Secondary axis: covered seconds per bin (useful diagnostic)
+        ax2 = ax_psth.twinx()
+        ax2.plot(centers, bin_covered_sec, lw=1.0, ls='--', alpha=0.7, label="Covered seconds per bin (sum over trials)")
+        ax2.set_ylabel("Covered sec (sum over trials)")
+        ax_psth.legend(loc='upper left')
+        ax2.legend(loc='upper right')
+
+        os.makedirs(OUT_DIR, exist_ok=True)
+        out_name = os.path.join(OUT_DIR, f"raster_psth_coverage_{key}_{os.path.splitext(fname)[0]}.png")
+        fig.savefig(out_name, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+
 def main():
     data_dir = "./data"
-    output_dir = "raster_rate_nanaware_three_phase"
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(OUT_DIR, exist_ok=True)
     files = sorted([f for f in os.listdir(data_dir) if f.endswith(".mat")])
-
     for f in files:
-        # Pre: align to STIM_ON (118)
-        analyze_file(f, window=(-0.5, 0.0), align_to_list=[STIM_ON_ID], label="Pre Stim",
-                     output_dir=output_dir, bin_size=0.01, show_trial_rasters=False)
-
-        # During: align to STIM_ON (118)
-        analyze_file(f, window=(0.0, 0.5), align_to_list=[STIM_ON_ID], label="During Stim",
-                     output_dir=output_dir, bin_size=0.01, show_trial_rasters=False)
-
-        # Post: align to SACCADE_CHOICE_ON (120)
-        analyze_file(f, window=(0.0, 0.5), align_to_list=[SACCADE_CHOICE_ON_ID], label="Post Stim",
-                     output_dir=output_dir, bin_size=0.01, show_trial_rasters=False)
-
-        # Optional: if you also want to inspect OFF (130/131), uncomment below
-        # analyze_file(f, window=(0.0, 0.5), align_to_list=list(STIM_OFF_IDS), label="Post (OFF 130/131)",
-        #              output_dir=output_dir, bin_size=0.01, show_trial_rasters=False)
-
-# Backward-compat alias for older naming that used "CHOISE"
-SACCADE_CHOISE_ON_ID = SACCADE_CHOICE_ON_ID
+        print(f"Processing {f} ...")
+        T = load_mat_session(os.path.join(data_dir, f))
+        pooled_raster_and_psth_coverage(T, f)
+    print(f"Done. Figures saved to {OUT_DIR}")
 
 if __name__ == "__main__":
     main()
