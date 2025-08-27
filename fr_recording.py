@@ -251,10 +251,22 @@ def pooled_raster_and_psth_coverage(T, fname, bin_size=BIN_SIZE):
         ax_raster.set_yticks(yticks)
         ax_raster.set_yticklabels(ytick_labels)
 
-        # PSTH
-        centers = edges_rel[:-1] + bin_size/2
-        ax_psth.plot(centers, rate_per_bin, lw=1.8, color='black', label="Rate (Hz / neuron), coverage-aware")
-        ax_psth.fill_between(centers, 0, np.nan_to_num(rate_per_bin, nan=0.0), alpha=0.25)
+
+        # PSTH: use bar instead of line
+        centers = edges_rel[:-1] + bin_size / 2
+        ax_psth.bar(
+            centers,
+            rate_per_bin,
+            width=bin_size,
+            align='center',
+            color='black',
+            alpha=0.7,
+            edgecolor='blue'
+        )
+        ax_psth.set_xlim(rel_lo, rel_hi)
+        ax_psth.set_xlabel(f"Time (s) from {label.lower()} (relative axis)")
+        ax_psth.set_ylabel("Rate (Hz / neuron)")
+
         ax_psth.set_xlim(rel_lo, rel_hi)
         ax_psth.set_xlabel(f"Time (s) from {label.lower()} (relative axis)")
         ax_psth.set_ylabel("Rate (Hz / neuron)")
@@ -263,7 +275,6 @@ def pooled_raster_and_psth_coverage(T, fname, bin_size=BIN_SIZE):
         ax2 = ax_psth.twinx()
         ax2.plot(centers, bin_covered_sec, lw=1.0, ls='--', alpha=0.7, label="Covered seconds per bin (sum over trials)")
         ax2.set_ylabel("Covered sec (sum over trials)")
-        ax_psth.legend(loc='upper left')
         ax2.legend(loc='upper right')
 
         os.makedirs(OUT_DIR, exist_ok=True)
