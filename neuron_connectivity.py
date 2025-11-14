@@ -17,8 +17,8 @@ MIN_TRIALS = 5            # A neuron must have at least 5 spikes (trials with va
 CONN_WINDOW = (0.0, 0.2)  # e.g., after aligning to each neuron’s latency, compute firing rate in 0–200 ms
 
 # Thresholds for directed connectivity
-CORR_THRESH = 0.4         # Correlation strength threshold for defining a connection
-MIN_LAT_DIFF = 0.001      # Minimal latency difference (s) to define direction, to avoid ambiguous edges
+CORR_THRESH = 0.5         # Correlation strength threshold for defining a connection
+MIN_LAT_DIFF = 0.003      # Minimal latency difference (s) to define direction, to avoid ambiguous edges
 
 # Output directory
 output_dir = "neuron_Connectivity_latencyDirected"
