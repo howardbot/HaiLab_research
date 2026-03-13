@@ -10,14 +10,17 @@ SURFACE_DIR = "./out_binary_outer_surfaces_ON_only"
 FINAL_DIR = "./final_videos_on_only"
 os.makedirs(FINAL_DIR, exist_ok=True)
 
-SESSIONS = ["CIP_1", "CIP_2", "CIP_3", "CIP_4"]
+REGION_SESSIONS = {
+    "CIP": ["CIP_1", "CIP_2", "CIP_3", "CIP_4"],
+    "V3A": ["V3A_1", "V3A_2", "V3A_3", "V3A_4"],
+}
 EPOCH_DIR = "ON_stimOnAnchor"
 
 # Match the naming produced by 01_build_surfaces_from_mat.py
 BINARY_TAGS = [
     "binary_0p500ms",
-    # "binary_1p000ms",
-    # "binary_2p000ms",
+    "binary_1p000ms",
+    "binary_2p000ms",
 ]
 
 FPS = 5
@@ -92,56 +95,65 @@ def plot_surface_to_png(Z, tau_ms, out_png, title):
     plt.close(fig)
 
 
+def render_region_video(region_name, sessions, binary_tag):
+    outer_rows = find_common_outer_rows(sessions, binary_tag)
+    if not outer_rows:
+        print(f"[SKIP] missing epoch/binary outputs for {region_name} / {binary_tag}")
+        return
+
+    tmp_dir = os.path.join(FINAL_DIR, f"_tmp_frames_{region_name}_{binary_tag}")
+    os.makedirs(tmp_dir, exist_ok=True)
+
+    frame_paths = []
+    total_frames = len(outer_rows)
+    for frame_idx, row in enumerate(outer_rows):
+        outer_idx = row["outer_idx"]
+        pngs = []
+
+        for session_idx, session in enumerate(sessions):
+            Z, tau = load_surface(session, binary_tag, outer_idx)
+            out_png = os.path.join(tmp_dir, f"frame_{outer_idx:04d}_s{session_idx}.png")
+            title = (
+                f"{session} | {region_name} | ON | {binary_tag} | "
+                f"[{row['t0_sec']:.3f}, {row['t1_sec']:.3f}) s"
+            )
+            plot_surface_to_png(Z, tau, out_png, title)
+            pngs.append(out_png)
+
+        grid_png = os.path.join(tmp_dir, f"grid_{outer_idx:04d}.png")
+        fig = plt.figure(figsize=(12, 8))
+        for k, png_path in enumerate(pngs[:4]):
+            img = plt.imread(png_path)
+            ax = fig.add_subplot(2, 2, k + 1)
+            ax.imshow(img)
+            ax.axis("off")
+
+        fig.suptitle(
+            f"{region_name} | ON outer slide | {binary_tag} | "
+            f"[{row['t0_sec']:.3f}, {row['t1_sec']:.3f}) s",
+            fontsize=14,
+        )
+        plt.tight_layout()
+        fig.savefig(grid_png, dpi=DPI)
+        plt.close(fig)
+
+        frame_paths.append(grid_png)
+        print(f"  {region_name} {binary_tag}: frame {frame_idx + 1}/{total_frames} done", end="\r")
+
+    out_mp4 = os.path.join(FINAL_DIR, f"{region_name}_ON_outerSlide_{binary_tag}.mp4")
+    clip = ImageSequenceClip(frame_paths, fps=FPS)
+    clip.write_videofile(out_mp4, codec="libx264", audio=False, verbose=False, logger="bar")
+    print(f"\n[OK] wrote {out_mp4}")
+
+
 def main():
-    for binary_tag in BINARY_TAGS:
-        outer_rows = find_common_outer_rows(SESSIONS, binary_tag)
-        if not outer_rows:
-            print(f"[SKIP] missing epoch/binary outputs for {binary_tag}")
+    for region_name, sessions in REGION_SESSIONS.items():
+        if len(sessions) != 4:
+            print(f"[SKIP] {region_name} needs exactly 4 sessions for 4-up, got {len(sessions)}")
             continue
 
-        tmp_dir = os.path.join(FINAL_DIR, f"_tmp_frames_{binary_tag}")
-        os.makedirs(tmp_dir, exist_ok=True)
-
-        frame_paths = []
-        total_frames = len(outer_rows)
-        for frame_idx, row in enumerate(outer_rows):
-            outer_idx = row["outer_idx"]
-            pngs = []
-
-            for session_idx, session in enumerate(SESSIONS):
-                Z, tau = load_surface(session, binary_tag, outer_idx)
-                out_png = os.path.join(tmp_dir, f"frame_{outer_idx:04d}_s{session_idx}.png")
-                title = (
-                    f"{session} | ON | {binary_tag} | "
-                    f"[{row['t0_sec']:.3f}, {row['t1_sec']:.3f}) s"
-                )
-                plot_surface_to_png(Z, tau, out_png, title)
-                pngs.append(out_png)
-
-            grid_png = os.path.join(tmp_dir, f"grid_{outer_idx:04d}.png")
-            fig = plt.figure(figsize=(12, 8))
-            for k, png_path in enumerate(pngs):
-                img = plt.imread(png_path)
-                ax = fig.add_subplot(2, 2, k + 1)
-                ax.imshow(img)
-                ax.axis("off")
-
-            fig.suptitle(
-                f"ON outer slide | {binary_tag} | "
-                f"[{row['t0_sec']:.3f}, {row['t1_sec']:.3f}) s",
-                fontsize=14,
-            )
-            plt.tight_layout()
-            fig.savefig(grid_png, dpi=DPI)
-            plt.close(fig)
-
-            frame_paths.append(grid_png)
-            print(f"  {binary_tag}: frame {frame_idx + 1}/{total_frames} done", end="\r")
-
-        out_mp4 = os.path.join(FINAL_DIR, f"ON_outerSlide_{binary_tag}.mp4")
-        clip = ImageSequenceClip(frame_paths, fps=FPS)
-        clip.write_videofile(out_mp4, codec="libx264", audio=False, verbose=False, logger="bar")
-        print(f"\n[OK] wrote {out_mp4}")
+        for binary_tag in BINARY_TAGS:
+            render_region_video(region_name, sessions, binary_tag)
 
 
 if __name__ == "__main__":
