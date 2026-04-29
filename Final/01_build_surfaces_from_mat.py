@@ -9,7 +9,7 @@ from src.Loader import load_mat_session
 # CONFIG
 # =========================================================
 
-DATA_DIR = "./data"
+DATA_DIR = "../data"
 OUTPUT_DIR = "./out_binary_outer_surfaces_ON_only"
 
 # Event IDs
