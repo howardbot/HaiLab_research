@@ -69,9 +69,11 @@ STIM_OFF_IDS = [120]
 # -------- spike-count bin resolutions --------
 # Coarser bins than binary → counts are more informative
 BIN_RESOLUTION_LIST_SEC = [
-    0.002,    # 2 ms
-    0.005,    # 5 ms  (recommended default for Poisson model)
-    0.010,    # 10 ms
+    0.0005,   # 0.5 ms  (mirrors 01_build_surfaces_from_mat.py)
+    0.001,    # 1 ms    (mirrors 01_build_surfaces_from_mat.py)
+    0.002,    # 2 ms    (mirrors 01_build_surfaces_from_mat.py)
+    0.005,    # 5 ms    (extra: ML default for Poisson/perceptron)
+    0.010,    # 10 ms   (extra: coarse)
 ]
 
 # -------- outer sliding windows (ON epoch) --------
